@@ -1,0 +1,19 @@
+
+name: Build PanVK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check source tree
+        run: |
+          uname -a
+          git rev-parse --short HEAD
+          ls -la
+          find scripts -maxdepth 2 -type f 2>/dev/null || true
