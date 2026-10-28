@@ -1,102 +1,88 @@
-name: Build PanVK glibc for Mali-G52
+name: Build PanVK G52 glibc (Manual)
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-glibc:
-    runs-on: ubuntu-latest
-    
+  build:
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-      - name: Install dependencies
+      - name: Install cross-compilation dependencies
         run: |
+          sudo dpkg --add-architecture arm64
           sudo apt-get update
           sudo apt-get install -y \
-            qemu-user-static \
-            qemu-system-arm \
-            binfmt-support \
-            gcc-aarch64-linux-gnu \
-            g++-aarch64-linux-gnu \
-            libc6-dev-arm64-cross \
-            clang \
-            meson \
-            ninja-build \
-            pkg-config \
-            python3 \
-            git \
-            ca-certificates
+            meson ninja-build pkg-config \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            libdrm-dev:arm64 libudev-dev:arm64 \
+            libwayland-dev:arm64 wayland-protocols \
+            python3-mako python3-pygments \
+            libvulkan-dev:arm64 \
+            libexpat1-dev:arm64 libzstd-dev:arm64 zlib1g-dev:arm64 \
+            libxcb-shm0-dev:arm64 libxcb-xfixes0-dev:arm64 libxcb-randr0-dev:arm64 \
+            libx11-xcb-dev:arm64 libxcb-dri2-0-dev:arm64 libxcb-dri3-dev:arm64
 
-      - name: Setup QEMU for aarch64
+      - name: Create Meson cross-file
         run: |
-          sudo update-binfmts --enable qemu-aarch64
-          sudo update-binfmts --display qemu-aarch64
-
-      - name: Fetch Mesa source
-        run: |
-          chmod +x scripts/*.sh
-          ./scripts/fetch-mesa.sh build/reconstructed-test/mesa
-
-      - name: Apply patches for G52
-        run: |
-          ./scripts/apply-patches.sh --profile g52-v7-jm --mesa build/reconstructed-test/mesa
-
-      - name: Configure and build with Meson (cross-compile)
-        run: |
-          mkdir -p dist/glibc-g52-v7-jm
-          
-          # Создаем cross file для aarch64
-          cat > cross-aarch64.ini << 'EOF'
+          cat > aarch64-linux-gnu.txt << 'EOF'
           [binaries]
           c = 'aarch64-linux-gnu-gcc'
           cpp = 'aarch64-linux-gnu-g++'
-          ar = 'aarch64-linux-gnu-ar'
+          ar = 'aarch64-linux-gnu-gcc-ar'
           strip = 'aarch64-linux-gnu-strip'
-          pkg-config = 'pkg-config'
+          pkgconfig = 'pkg-config'
+          
+          [properties]
+          needs_exe_wrapper = false
           
           [host_machine]
           system = 'linux'
           cpu_family = 'aarch64'
           cpu = 'aarch64'
           endian = 'little'
-          
-          [properties]
-          c_args = []
-          c_link_args = []
           EOF
-          
-          # Настраиваем сборку
-          meson setup build/linux-glibc-g52 build/reconstructed-test/mesa \
-            --cross-file cross-aarch64.ini \
-            -Dbuildtype=release \
-            -Dplatforms=x11,wayland \
-            -Dgallium-drivers= \
+
+      - name: Configure Meson
+        run: |
+          # Собираем Vulkan-драйвер panfrost (он же PanVK для Bifrost/Mali-G52)
+          meson setup build --cross-file aarch64-linux-gnu.txt \
             -Dvulkan-drivers=panfrost \
-            -Dpanfrost-kmds=kbase \
-            -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false \
-            -Dglx=disabled -Dgbm=disabled -Dzstd=disabled -Dlibunwind=disabled
+            -Dgallium-drivers= \
+            -Dplatforms= \
+            -Dprefix=/usr \
+            --buildtype=release
+
+      - name: Compile
+        run: |
+          ninja -C build
+
+      - name: Package artifacts
+        run: |
+          mkdir -p panvk-artifact/lib
+          mkdir -p panvk-artifact/share/vulkan/icd.d
           
-          # Собираем
-          ninja -j2 -C build/linux-glibc-g52
+          # Копируем все собранные .so файлы
+          find build -name "*.so" -exec cp {} panvk-artifact/lib/ \;
+          
+          # Создаем правильный ICD manifest для Linux
+          echo '{
+            "file_format_version": "1.0.0",
+            "ICD": {
+              "library_path": "/usr/lib/aarch64-linux-gnu/libvulkan_panfrost.so",
+              "api_version": "1.3.0"
+            }
+          }' > panvk-artifact/share/vulkan/icd.d/panvk_icd.aarch64.json
+          
+          # Сохраняем лог сборки на случай ошибок
+          cp build/meson-logs/meson-log.txt panvk-artifact/ || true
 
-      - name: Copy artifacts
-        run: |
-          find build/linux-glibc-g52 -name 'libvulkan_panfrost.so' -exec cp {} dist/glibc-g52-v7-jm/ \;
-          find build/linux-glibc-g52 -name 'panfrost_icd.*.json' -exec cp {} dist/glibc-g52-v7-jm/panfrost_icd.aarch64.json \;
-          ls -lh dist/glibc-g52-v7-jm/
-
-      - name: Verify build
-        run: |
-          cd dist/glibc-g52-v7-jm
-          file libvulkan_panfrost.so
-          readelf -h libvulkan_panfrost.so | grep -i "machine"
-          cat panfrost_icd.aarch64.json
-
-      - name: Upload artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: panvk-glibc-mali-g52
-          path: dist/glibc-g52-v7-jm/
-          retention-days: 30
+          name: panvk-mali-g52-glibc-real-build
+          path: panvk-artifact/
