@@ -12,8 +12,12 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install cross-compilation dependencies
+      - name: Fix apt sources for arm64 and install dependencies
         run: |
+          # Исправляем ошибку 404 для arm64 пакетов на security.ubuntu.com
+          sudo sed -i 's/security.ubuntu.com/azure.archive.ubuntu.com/g' /etc/apt/sources.list.d/*.sources || true
+          sudo sed -i 's/security.ubuntu.com/azure.archive.ubuntu.com/g' /etc/apt/sources.list || true
+          
           sudo dpkg --add-architecture arm64
           sudo apt-get update
           sudo apt-get install -y \
@@ -49,7 +53,7 @@ jobs:
 
       - name: Configure Meson
         run: |
-          # Собираем Vulkan-драйвер panfrost (он же PanVK для Bifrost/Mali-G52)
+          # Собираем Vulkan-драйвер panfrost (PanVK для Bifrost/Mali-G52)
           meson setup build --cross-file aarch64-linux-gnu.txt \
             -Dvulkan-drivers=panfrost \
             -Dgallium-drivers= \
